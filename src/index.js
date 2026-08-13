@@ -4,6 +4,8 @@ const { Octokit } = require("@octokit/rest");
 const fetchDiff = require("./github/fetchDiff");
 const parseDiff = require("./review/parseDiff");
 const { postReview } = require("./github/postReview");
+const llmReview = require("./review/llmReview");
+const validateReview = require("./review/schema");
 
 const octokit = new Octokit({
   auth: process.env.GITHUB_TOKEN,
@@ -12,11 +14,11 @@ const octokit = new Octokit({
 async function main() {
   const owner = "varunn15";
   const repo = "pr-review-bot-test";
-  const pull_number = 1; // ✅ CHANGED: Now using PR #2
+  const pull_number = 1;
 
   console.log(`🔍 Fetching PR #${pull_number} from ${owner}/${repo}...`);
 
-  // Step 1: Get the PR details (including the commit SHA)
+  // Step 1: Get the PR details
   console.log("\n📋 Getting PR details...");
   const { data: pullRequest } = await octokit.rest.pulls.get({
     owner,
@@ -33,12 +35,12 @@ async function main() {
     return;
   }
 
-  // Step 2: Fetch all files in the PR
+  // Step 2: Fetch all files
   console.log("\n📁 Fetching PR files...");
   const files = await fetchDiff(octokit, owner, repo, pull_number);
   console.log(`   Found ${files.length} files in the PR`);
 
-  // Step 3: Look for a file with changes (skip if no changes)
+  // Step 3: Look for a file with changes
   const fileWithChanges = files.find(f => f.additions > 0);
   
   if (!fileWithChanges) {
@@ -50,7 +52,7 @@ async function main() {
   console.log(`   Additions: ${fileWithChanges.additions}`);
   console.log(`   Deletions: ${fileWithChanges.deletions}`);
 
-  // Step 4: Parse the patch to find changed lines
+  // Step 4: Parse the patch
   console.log("\n🔍 Parsing diff...");
   const changedLines = parseDiff(fileWithChanges.patch);
   
@@ -59,28 +61,34 @@ async function main() {
     console.log(`   ${index + 1}. Line ${line.line}: ${line.content.trim()}`);
   });
 
-  // Step 5: Pick a line to comment on
   if (changedLines.length === 0) {
     console.log("❌ No changed lines found to comment on");
     return;
   }
 
-  // Pick the first changed line
-  const targetLine = changedLines[0];
-  const commentText = `🤖 **Test comment from PR Review Bot**
+  // Step 5: Get AI review from Gemini
+  console.log("\n🤖 Running full LLM review pipeline...");
+  const review = await llmReview(changedLines);
+  
+  console.log("\n===== GEMINI REVIEW =====");
+  console.log(JSON.stringify(review, null, 2));
 
-This is a test comment on line ${targetLine.line}.
+  // Step 6: Validate the review
+  const validatedReview = validateReview(review, changedLines);
+  console.log("\n===== VALIDATED REVIEW =====");
+  console.log(JSON.stringify(validatedReview, null, 2));
 
-The code here is: \`${targetLine.content.trim()}\`
+  // Step 7: Post the AI finding as an inline comment
+  if (validatedReview.findings.length > 0) {
+    const finding = validatedReview.findings[0];
+    
+    const commentText = `🤖 **AI Code Review**\n\n` +
+      `**Severity:** ${finding.severity}\n` +
+      `**Issue:** ${finding.comment}`;
 
----
-🔍 *Test comment using fine-grained token authentication*`;
+    console.log(`\n💬 Posting AI review on line ${finding.line}:`);
+    console.log(`   "${commentText}"`);
 
-  console.log(`\n💬 Posting comment on line ${targetLine.line}:`);
-  console.log(`   "${commentText}"`);
-
-  // Step 6: Post the comment
-  try {
     await postReview(
       octokit,
       owner,
@@ -88,28 +96,15 @@ The code here is: \`${targetLine.content.trim()}\`
       pull_number,
       commitId,
       fileWithChanges.filename,
-      targetLine.line,
+      finding.line,
       commentText
     );
 
-    console.log("\n🎉 Success! Check your PR for the inline comment.");
+    console.log(`\n🎉 AI review posted to your PR!`);
     console.log(`   https://github.com/${owner}/${repo}/pull/${pull_number}`);
-  } catch (error) {
-    console.error("\n❌ Failed to post comment:", error.message);
-    
-    // Provide helpful troubleshooting
-    console.log("\n💡 Troubleshooting tips:");
-    console.log("   1. Make sure the PR is OPEN (not merged/closed)");
-    console.log("   2. Verify the line number exists in the file");
-    console.log("   3. Check that your GITHUB_TOKEN has proper permissions");
-    console.log("   4. Try a different line number (some lines might not be commentable)");
-    
-    if (changedLines.length > 1) {
-      console.log(`\n   Try commenting on a different line:`);
-      changedLines.forEach((line, i) => {
-        console.log(`   ${i + 1}. Line ${line.line}: ${line.content.trim()}`);
-      });
-    }
+  } else {
+    console.log("\n✅ No issues found in the code");
+    console.log("   No review comment posted.");
   }
 }
 

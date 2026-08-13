@@ -18,6 +18,8 @@
   "homepage": "https://github.com/varunn15/github-pr-review-bot#readme",
   "description": "",
   "dependencies": {
+    "@google/genai": "^2.17.0",
+    "@google/generative-ai": "^0.24.1",
     "@octokit/rest": "^22.0.1"
   }
 }
