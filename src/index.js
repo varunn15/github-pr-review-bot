@@ -9,22 +9,24 @@ const validateReview = require("./review/schema");
 
 // Get config from environment (GitHub Actions) or .env (local)
 const config = {
-  githubToken: process.env.GITHUB_TOKEN || process.env.GITHUB_TOKEN_DEV,
-  geminiKey: process.env.GEMINI_API_KEY,
-  owner: process.env.REPO_OWNER || "varunn15",
-  repo: process.env.REPO_NAME || "pr-review-bot-test",
-  prNumber: parseInt(process.env.PR_NUMBER || "1"),
+  githubToken: process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN,
+  geminiKey: process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY,
+  owner: process.env.REPO_OWNER || process.env.GITHUB_REPOSITORY_OWNER || "varunn15",
+  repo: process.env.REPO_NAME || process.env.GITHUB_REPOSITORY?.split('/')[1] || "pr-review-bot-test",
+  prNumber: parseInt(process.env.PR_NUMBER || process.env.INPUT_PR_NUMBER || "1"),
 };
 
 // Validate required env vars
 if (!config.githubToken) {
   console.error("❌ GITHUB_TOKEN is required");
-  console.error("   Set it in .env or as a GitHub secret");
+  console.error("   Make sure it's passed as an environment variable or input");
+  console.error("   Available env vars:", Object.keys(process.env).filter(k => k.includes('TOKEN')));
   process.exit(1);
 }
+
 if (!config.geminiKey) {
   console.error("❌ GEMINI_API_KEY is required");
-  console.error("   Set it in .env or as a GitHub secret");
+  console.error("   Make sure it's passed as an environment variable or input");
   process.exit(1);
 }
 
@@ -81,7 +83,6 @@ async function main() {
 
   if (codeFiles.length === 0) {
     console.log("✅ No code files to review");
-    // Post a summary comment
     await postSummaryComment(octokit, owner, repo, prNumber, 
       "✅ No code files to review. Skipping AI analysis."
     );
