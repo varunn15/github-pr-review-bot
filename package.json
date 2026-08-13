@@ -1,25 +1,30 @@
 {
   "name": "github-pr-review-bot",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "src/index.js",
   "scripts": {
+    "start": "node src/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/varunn15/github-pr-review-bot.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["github-action", "pr-review", "gemini", "ai", "code-review", "automation"],
+  "author": "varunn15",
+  "license": "MIT",
   "bugs": {
     "url": "https://github.com/varunn15/github-pr-review-bot/issues"
   },
   "homepage": "https://github.com/varunn15/github-pr-review-bot#readme",
-  "description": "",
+  "description": "GitHub Action that reviews PRs using Google Gemini AI",
   "dependencies": {
     "@google/genai": "^2.17.0",
     "@google/generative-ai": "^0.24.1",
-    "@octokit/rest": "^22.0.1"
+    "@octokit/rest": "^22.0.1",
+    "dotenv": "^16.0.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

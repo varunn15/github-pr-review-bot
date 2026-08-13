@@ -1,0 +1,44 @@
+name: PR Review Bot
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # Optionally limit to specific files:
+    # paths:
+    #   - '**.js'
+    #   - '**.ts'
+    #   - '**.py'
+
+permissions:
+  contents: read
+  pull-requests: write  # Required to post comments
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed to get full diff
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci  # npm ci is faster and more reliable in CI
+
+      - name: Run PR Review Bot
+        uses: ./  # Uses the action.yml in the root
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        env:
+          # Optional: Pass PR info as env vars
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}

@@ -1,0 +1,19 @@
+name: "PR Review Bot"
+description: "Automatically review PRs using Google Gemini AI"
+author: "varunn15"
+
+inputs:
+  GITHUB_TOKEN:
+    description: "GitHub token with repo access"
+    required: true
+  GEMINI_API_KEY:
+    description: "Google Gemini API key"
+    required: true
+
+runs:
+  using: "node20"
+  main: "src/index.js"
+
+branding:
+  icon: "message-square"
+  color: "blue"

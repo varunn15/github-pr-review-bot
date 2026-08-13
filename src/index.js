@@ -7,23 +7,43 @@ const { postReview } = require("./github/postReview");
 const llmReview = require("./review/llmReview");
 const validateReview = require("./review/schema");
 
+// Get config from environment (GitHub Actions) or .env (local)
+const config = {
+  githubToken: process.env.GITHUB_TOKEN || process.env.GITHUB_TOKEN_DEV,
+  geminiKey: process.env.GEMINI_API_KEY,
+  owner: process.env.REPO_OWNER || "varunn15",
+  repo: process.env.REPO_NAME || "pr-review-bot-test",
+  prNumber: parseInt(process.env.PR_NUMBER || "1"),
+};
+
+// Validate required env vars
+if (!config.githubToken) {
+  console.error("❌ GITHUB_TOKEN is required");
+  console.error("   Set it in .env or as a GitHub secret");
+  process.exit(1);
+}
+if (!config.geminiKey) {
+  console.error("❌ GEMINI_API_KEY is required");
+  console.error("   Set it in .env or as a GitHub secret");
+  process.exit(1);
+}
+
 const octokit = new Octokit({
-  auth: process.env.GITHUB_TOKEN,
+  auth: config.githubToken,
 });
 
 async function main() {
-  const owner = "varunn15";
-  const repo = "pr-review-bot-test";
-  const pull_number = 1;
-
-  console.log(`🔍 Fetching PR #${pull_number} from ${owner}/${repo}...`);
+  const { owner, repo, prNumber } = config;
+  
+  console.log(`🔍 Fetching PR #${prNumber} from ${owner}/${repo}...`);
+  console.log(`🤖 Running in ${process.env.GITHUB_ACTIONS ? 'GitHub Actions' : 'local'} mode`);
 
   // Step 1: Get the PR details
   console.log("\n📋 Getting PR details...");
   const { data: pullRequest } = await octokit.rest.pulls.get({
     owner,
     repo,
-    pull_number,
+    pull_number: prNumber,
   });
 
   const commitId = pullRequest.head.sha;
@@ -31,80 +51,148 @@ async function main() {
   console.log(`   PR state: ${pullRequest.state}`);
   
   if (pullRequest.state !== "open") {
-    console.warn(`⚠️  PR is ${pullRequest.state}, not open. Comments may fail.`);
+    console.warn(`⚠️  PR is ${pullRequest.state}, not open. Skipping.`);
     return;
   }
 
   // Step 2: Fetch all files
   console.log("\n📁 Fetching PR files...");
-  const files = await fetchDiff(octokit, owner, repo, pull_number);
+  const files = await fetchDiff(octokit, owner, repo, prNumber);
   console.log(`   Found ${files.length} files in the PR`);
 
-  // Step 3: Look for a file with changes
-  const fileWithChanges = files.find(f => f.additions > 0);
+  // Step 3: Filter files (ignore common non-code files)
+  const ignorePatterns = [
+    /\.lock$/,
+    /\.txt$/,
+    /\.md$/,
+    /\.json$/,
+    /\.yml$/,
+    /\.yaml$/,
+    /pnpm-lock/,
+    /package-lock/,
+    /\.gitignore/,
+    /\.env/,
+  ];
   
-  if (!fileWithChanges) {
-    console.log("❌ No files with additions found");
+  const codeFiles = files.filter(file => 
+    file.additions > 0 && 
+    !ignorePatterns.some(pattern => pattern.test(file.filename))
+  );
+
+  if (codeFiles.length === 0) {
+    console.log("✅ No code files to review");
+    // Post a summary comment
+    await postSummaryComment(octokit, owner, repo, prNumber, 
+      "✅ No code files to review. Skipping AI analysis."
+    );
     return;
   }
 
-  console.log(`\n📄 Using file: ${fileWithChanges.filename}`);
-  console.log(`   Additions: ${fileWithChanges.additions}`);
-  console.log(`   Deletions: ${fileWithChanges.deletions}`);
+  console.log(`   Found ${codeFiles.length} code files to review`);
 
-  // Step 4: Parse the patch
-  console.log("\n🔍 Parsing diff...");
-  const changedLines = parseDiff(fileWithChanges.patch);
+  // Step 4: Process each file
+  let totalFindings = 0;
+  const allFindings = [];
   
-  console.log(`   Found ${changedLines.length} changed lines:`);
-  changedLines.forEach((line, index) => {
-    console.log(`   ${index + 1}. Line ${line.line}: ${line.content.trim()}`);
-  });
+  for (const file of codeFiles) {
+    console.log(`\n📄 Processing: ${file.filename}`);
+    console.log(`   Additions: ${file.additions}, Deletions: ${file.deletions}`);
 
-  if (changedLines.length === 0) {
-    console.log("❌ No changed lines found to comment on");
-    return;
+    // Parse the patch
+    const changedLines = parseDiff(file.patch);
+    console.log(`   Found ${changedLines.length} changed lines`);
+
+    if (changedLines.length === 0) continue;
+
+    // Get AI review
+    console.log("   🤖 Getting AI review from Gemini...");
+    try {
+      const review = await llmReview(changedLines);
+      const validatedReview = validateReview(review, changedLines);
+
+      // Post findings
+      for (const finding of validatedReview.findings) {
+        const commentText = `🤖 **AI Code Review**\n\n` +
+          `**Severity:** ${finding.severity}\n` +
+          `**Issue:** ${finding.comment}`;
+
+        console.log(`   💬 Posting finding on line ${finding.line}`);
+        await postReview(
+          octokit,
+          owner,
+          repo,
+          prNumber,
+          commitId,
+          file.filename,
+          finding.line,
+          commentText
+        );
+        totalFindings++;
+        allFindings.push({
+          file: file.filename,
+          line: finding.line,
+          severity: finding.severity,
+          comment: finding.comment,
+        });
+      }
+    } catch (error) {
+      console.error(`   ❌ Error reviewing ${file.filename}:`, error.message);
+    }
   }
 
-  // Step 5: Get AI review from Gemini
-  console.log("\n🤖 Running full LLM review pipeline...");
-  const review = await llmReview(changedLines);
-  
-  console.log("\n===== GEMINI REVIEW =====");
-  console.log(JSON.stringify(review, null, 2));
+  // Step 5: Post summary comment
+  let summaryBody;
+  if (totalFindings > 0) {
+    summaryBody = `🤖 **PR Review Bot Summary**\n\n` +
+      `Found **${totalFindings}** issue${totalFindings > 1 ? 's' : ''} in ${codeFiles.length} file${codeFiles.length > 1 ? 's' : ''}.\n\n` +
+      allFindings.map(f => 
+        `- **${f.file}** (line ${f.line}): ${f.severity} - ${f.comment}`
+      ).join('\n');
+  } else {
+    summaryBody = `🤖 **PR Review Bot**\n\n✅ No issues found in this PR!`;
+  }
 
-  // Step 6: Validate the review
-  const validatedReview = validateReview(review, changedLines);
-  console.log("\n===== VALIDATED REVIEW =====");
-  console.log(JSON.stringify(validatedReview, null, 2));
+  await postSummaryComment(octokit, owner, repo, prNumber, summaryBody);
+  console.log(`\n🎉 Review complete! Found ${totalFindings} issue${totalFindings > 1 ? 's' : ''}.`);
+}
 
-  // Step 7: Post the AI finding as an inline comment
-  if (validatedReview.findings.length > 0) {
-    const finding = validatedReview.findings[0];
-    
-    const commentText = `🤖 **AI Code Review**\n\n` +
-      `**Severity:** ${finding.severity}\n` +
-      `**Issue:** ${finding.comment}`;
-
-    console.log(`\n💬 Posting AI review on line ${finding.line}:`);
-    console.log(`   "${commentText}"`);
-
-    await postReview(
-      octokit,
+/**
+ * Post a summary comment to the PR
+ */
+async function postSummaryComment(octokit, owner, repo, prNumber, body) {
+  try {
+    // Check if we already posted a summary comment
+    const { data: comments } = await octokit.rest.issues.listComments({
       owner,
       repo,
-      pull_number,
-      commitId,
-      fileWithChanges.filename,
-      finding.line,
-      commentText
+      issue_number: prNumber,
+    });
+
+    const botComment = comments.find(c => 
+      c.user.type === 'Bot' && c.body.includes('PR Review Bot Summary')
     );
 
-    console.log(`\n🎉 AI review posted to your PR!`);
-    console.log(`   https://github.com/${owner}/${repo}/pull/${pull_number}`);
-  } else {
-    console.log("\n✅ No issues found in the code");
-    console.log("   No review comment posted.");
+    if (botComment) {
+      // Update existing comment
+      await octokit.rest.issues.updateComment({
+        owner,
+        repo,
+        comment_id: botComment.id,
+        body,
+      });
+      console.log("   📝 Updated summary comment");
+    } else {
+      // Create new comment
+      await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body,
+      });
+      console.log("   📝 Posted summary comment");
+    }
+  } catch (error) {
+    console.error("   ⚠️ Could not post summary comment:", error.message);
   }
 }
 
