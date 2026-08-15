@@ -2,6 +2,12 @@
  * Parse a unified diff patch to extract changed lines
  */
 function parseDiff(patch) {
+  // ✅ Add defensive check
+  if (!patch || typeof patch !== 'string') {
+    console.warn("⚠️ Invalid patch provided to parseDiff");
+    return [];
+  }
+  
   const lines = patch.split("\n");
   const changedLines = [];
   let newLineNumber = 0;
