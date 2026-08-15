@@ -1,9 +1,10 @@
 {
   "name": "github-pr-review-bot",
   "version": "1.0.0",
-  "main": "src/index.js",
+  "main": "dist/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "build": "ncc build src/index.js --license licenses.txt",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -27,14 +28,13 @@
   "description": "GitHub Action that reviews PRs using Google Gemini AI",
   "dependencies": {
     "@google/genai": "^2.17.0",
-    "@google/generative-ai": "^0.24.1",
     "@octokit/rest": "^22.0.1",
     "dotenv": "^16.0.0"
   },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.4"
+  },
   "engines": {
     "node": ">=20"
-  },
-  "devDependencies": {
-    "@vercel/ncc": "^0.45.0"
   }
 }
