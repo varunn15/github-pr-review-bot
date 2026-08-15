@@ -80,7 +80,7 @@ out
 
 # Nuxt.js build / generate output
 .nuxt
-dist
+# dist  ← REMOVED/COMMENTED OUT
 .output
 
 # Gatsby files
@@ -141,8 +141,3 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
-node_modules/
-.env
-*.log
-.DS_Store
-# dist/  ← Remove this line if it exists!
