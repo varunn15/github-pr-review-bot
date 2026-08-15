@@ -141,3 +141,8 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+node_modules/
+.env
+*.log
+.DS_Store
+# dist/  ← Remove this line if it exists!
