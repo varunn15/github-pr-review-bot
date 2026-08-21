@@ -10,7 +10,10 @@ function parseDiff(patch) {
   let newLineNumber = 0;
 
   for (const line of lines) {
+    // HUNK HEADER: "@@ -1,5 +1,7 @@"
     if (line.startsWith("@@")) {
+      // Extract the starting line number for the NEW file
+      // Pattern: +1,7 means new file starts at line 1
       const match = line.match(/\+(\d+)(?:,\d+)?/);
       if (match) {
         newLineNumber = Number(match[1]);
@@ -18,6 +21,7 @@ function parseDiff(patch) {
       continue;
     }
 
+    // ADDED LINE: "+ const total = price + tax;"
     if (line.startsWith("+")) {
       changedLines.push({
         line: newLineNumber,
@@ -28,10 +32,13 @@ function parseDiff(patch) {
       continue;
     }
 
+    // DELETED LINE: "- return price + tax;"
     if (line.startsWith("-")) {
+      // Deleted lines don't exist in the new file, so we don't increment
       continue;
     }
 
+    // CONTEXT LINE: " function calculateTotal(price, tax) {"
     if (line.startsWith(" ")) {
       newLineNumber++;
     }
