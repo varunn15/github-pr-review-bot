@@ -6,6 +6,7 @@ const parseDiff = require("./review/parseDiff");
 const { postReview } = require("./github/postReview");
 const llmReview = require("./review/llmReview");
 const validateReview = require("./review/schema");
+const { hasBeenReviewed, generateReviewBody, BOT_MARKER } = require("./github/reviewStatus");
 
 // Get config from environment (GitHub Actions) or .env (local)
 const config = {
@@ -20,7 +21,6 @@ const config = {
 if (!config.githubToken) {
   console.error("❌ GITHUB_TOKEN is required");
   console.error("   Make sure it's passed as an environment variable or input");
-  console.error("   Available env vars:", Object.keys(process.env).filter(k => k.includes('TOKEN')));
   process.exit(1);
 }
 
@@ -33,6 +33,43 @@ if (!config.geminiKey) {
 const octokit = new Octokit({
   auth: config.githubToken,
 });
+
+/**
+ * Post a summary comment to the PR
+ */
+async function postSummaryComment(octokit, owner, repo, prNumber, body) {
+  try {
+    const { data: comments } = await octokit.rest.issues.listComments({
+      owner,
+      repo,
+      issue_number: prNumber,
+    });
+
+    const botComment = comments.find(c => 
+      c.user.type === 'Bot' && c.body.includes('PR Review Bot Summary')
+    );
+
+    if (botComment) {
+      await octokit.rest.issues.updateComment({
+        owner,
+        repo,
+        comment_id: botComment.id,
+        body,
+      });
+      console.log("   📝 Updated summary comment");
+    } else {
+      await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body,
+      });
+      console.log("   📝 Posted summary comment");
+    }
+  } catch (error) {
+    console.error("   ⚠️ Could not post summary comment:", error.message);
+  }
+}
 
 async function main() {
   const { owner, repo, prNumber } = config;
@@ -49,7 +86,7 @@ async function main() {
   });
 
   const commitId = pullRequest.head.sha;
-  console.log(`✅ PR commit: ${commitId}`);
+  console.log(`📌 HEAD commit: ${commitId}`);
   console.log(`   PR state: ${pullRequest.state}`);
   
   if (pullRequest.state !== "open") {
@@ -57,12 +94,20 @@ async function main() {
     return;
   }
 
-  // Step 2: Fetch all files
+  // Step 2: Check if already reviewed (IDEMPOTENCY)
+  const alreadyReviewed = await hasBeenReviewed(octokit, owner, repo, prNumber, commitId);
+  
+  if (alreadyReviewed) {
+    console.log(`✅ Skipping duplicate review for commit ${commitId.substring(0, 7)}`);
+    return;
+  }
+
+  // Step 3: Fetch all files
   console.log("\n📁 Fetching PR files...");
   const files = await fetchDiff(octokit, owner, repo, prNumber);
   console.log(`   Found ${files.length} files in the PR`);
 
-  // Step 3: Filter files (ignore common non-code files)
+  // Step 4: Filter files
   const ignorePatterns = [
     /\.lock$/,
     /\.txt$/,
@@ -91,7 +136,7 @@ async function main() {
 
   console.log(`   Found ${codeFiles.length} code files to review`);
 
-  // Step 4: Process each file
+  // Step 5: Process each file
   let totalFindings = 0;
   const allFindings = [];
   
@@ -111,23 +156,8 @@ async function main() {
       const review = await llmReview(changedLines);
       const validatedReview = validateReview(review, changedLines);
 
-      // Post findings
+      // Collect findings
       for (const finding of validatedReview.findings) {
-        const commentText = `🤖 **AI Code Review**\n\n` +
-          `**Severity:** ${finding.severity}\n` +
-          `**Issue:** ${finding.comment}`;
-
-        console.log(`   💬 Posting finding on line ${finding.line}`);
-        await postReview(
-          octokit,
-          owner,
-          repo,
-          prNumber,
-          commitId,
-          file.filename,
-          finding.line,
-          commentText
-        );
         totalFindings++;
         allFindings.push({
           file: file.filename,
@@ -141,60 +171,63 @@ async function main() {
     }
   }
 
-  // Step 5: Post summary comment
-  let summaryBody;
-  if (totalFindings > 0) {
-    summaryBody = `🤖 **PR Review Bot Summary**\n\n` +
-      `Found **${totalFindings}** issue${totalFindings > 1 ? 's' : ''} in ${codeFiles.length} file${codeFiles.length > 1 ? 's' : ''}.\n\n` +
+  // Step 6: Post findings as a single review
+  if (allFindings.length > 0) {
+    console.log(`\n💬 Posting ${allFindings.length} finding(s) as a single review...`);
+    
+    // Generate review body with bot marker and commit SHA
+    const reviewBody = generateReviewBody(allFindings, commitId);
+    
+    // Post the review using the GitHub API
+    await octokit.rest.pulls.createReview({
+      owner,
+      repo,
+      pull_number: prNumber,
+      commit_id: commitId,
+      body: reviewBody,
+      event: "COMMENT",
+      comments: allFindings.map(finding => ({
+        path: finding.file,
+        line: finding.line,
+        side: "RIGHT",
+        body: `🤖 **AI Code Review**\n\n**Severity:** ${finding.severity}\n**Issue:** ${finding.comment}`,
+      })),
+    });
+
+    console.log(`✅ Review posted successfully!`);
+    console.log(`   Commit: ${commitId}`);
+    console.log(`   Findings: ${allFindings.length}`);
+
+    // Also post a summary comment
+    const summaryBody = `🤖 **PR Review Bot Summary**\n\n` +
+      `Found **${allFindings.length}** issue${allFindings.length > 1 ? 's' : ''} in ${codeFiles.length} file${codeFiles.length > 1 ? 's' : ''}.\n\n` +
       allFindings.map(f => 
         `- **${f.file}** (line ${f.line}): ${f.severity} - ${f.comment}`
       ).join('\n');
+
+    await postSummaryComment(octokit, owner, repo, prNumber, summaryBody);
+    
   } else {
-    summaryBody = `🤖 **PR Review Bot**\n\n✅ No issues found in this PR!`;
-  }
-
-  await postSummaryComment(octokit, owner, repo, prNumber, summaryBody);
-  console.log(`\n🎉 Review complete! Found ${totalFindings} issue${totalFindings > 1 ? 's' : ''}.`);
-}
-
-/**
- * Post a summary comment to the PR
- */
-async function postSummaryComment(octokit, owner, repo, prNumber, body) {
-  try {
-    // Check if we already posted a summary comment
-    const { data: comments } = await octokit.rest.issues.listComments({
+    // Post a "no issues found" review
+    const reviewBody = `${BOT_MARKER}\n\n🤖 **AI Code Review**\n\n**Commit:** ${commitId}\n\n✅ No issues found in this PR.\n\n---\n*Reviewed by AI PR Review Bot*`;
+    
+    await octokit.rest.pulls.createReview({
       owner,
       repo,
-      issue_number: prNumber,
+      pull_number: prNumber,
+      commit_id: commitId,
+      body: reviewBody,
+      event: "COMMENT",
     });
 
-    const botComment = comments.find(c => 
-      c.user.type === 'Bot' && c.body.includes('PR Review Bot Summary')
-    );
+    console.log(`✅ No issues found. Review posted.`);
 
-    if (botComment) {
-      // Update existing comment
-      await octokit.rest.issues.updateComment({
-        owner,
-        repo,
-        comment_id: botComment.id,
-        body,
-      });
-      console.log("   📝 Updated summary comment");
-    } else {
-      // Create new comment
-      await octokit.rest.issues.createComment({
-        owner,
-        repo,
-        issue_number: prNumber,
-        body,
-      });
-      console.log("   📝 Posted summary comment");
-    }
-  } catch (error) {
-    console.error("   ⚠️ Could not post summary comment:", error.message);
+    await postSummaryComment(octokit, owner, repo, prNumber, 
+      `🤖 **PR Review Bot Summary**\n\n✅ No issues found in this PR!`
+    );
   }
+
+  console.log(`\n🎉 Review complete! Found ${allFindings.length} issue${allFindings.length > 1 ? 's' : ''}.`);
 }
 
 main().catch((error) => {
