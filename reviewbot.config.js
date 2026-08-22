@@ -1,7 +1,6 @@
 module.exports = {
   filtering: {
     allowedExtensions: [".js", ".jsx", ".ts", ".tsx"],
-
     ignoredDirectories: [
       "node_modules/",
       ".github/",
@@ -15,7 +14,6 @@ module.exports = {
       "__tests__/",
       "vendor/",
     ],
-
     ignoredFiles: [
       "package-lock.json",
       "yarn.lock",
@@ -27,8 +25,11 @@ module.exports = {
       "Dockerfile",
       "docker-compose.yml",
     ],
-
     maxFiles: 50,
     maxChangedLines: 10000,
+  },
+
+  ci: {
+    failOn: ["CRITICAL", "HIGH"],
   },
 };

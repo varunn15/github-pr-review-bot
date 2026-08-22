@@ -5,9 +5,11 @@ const fetchDiff = require("./github/fetchDiff");
 const parseDiff = require("./review/parseDiff");
 const { postReview } = require("./github/postReview");
 const llmReview = require("./review/llmReview");
-const validateReview = require("./review/schema");
+const schemaValidate = require("./review/schema");
 const { hasBeenReviewed, generateReviewBody, BOT_MARKER } = require("./github/reviewStatus");
 const { filterFiles } = require("./filterFiles");
+const { validateReview } = require("./validateReview");
+const { shouldFailCI } = require("./ciGate");
 const config = require("../reviewbot.config");
 
 // Get config from environment (GitHub Actions) or .env (local)
@@ -187,6 +189,7 @@ async function main() {
             line: issue.line,
             severity: severityMap[issue.severity] || 'suggestion',
             comment: `**${issue.title}**\n\n${issue.explanation}\n\n**Suggested Fix:** ${issue.suggestedFix}`,
+            rawSeverity: issue.severity,
           });
         }
       } else {
@@ -251,6 +254,38 @@ async function main() {
     await postSummaryComment(octokit, owner, repo, prNumber, 
       `🤖 **PR Review Bot Summary**\n\n✅ No issues found in this PR!`
     );
+  }
+
+  // Step 9: Validate review structure
+  try {
+    const reviewForValidation = {
+      issues: allFindings.map(f => ({
+        severity: f.rawSeverity || f.severity.toUpperCase(),
+        file: f.file,
+        line: f.line,
+        title: f.comment.split('\n')[0] || 'Issue',
+        explanation: f.comment,
+        suggestedFix: 'See comment for details',
+      })),
+    };
+    validateReview(reviewForValidation);
+    console.log("✅ Review validation passed");
+  } catch (error) {
+    console.error("❌ Review validation failed:", error.message);
+    process.exit(1);
+  }
+
+  // Step 10: Check CI gate
+  const ciShouldFail = shouldFailCI(
+    allFindings.map(f => ({ severity: f.rawSeverity || f.severity.toUpperCase() }))
+  );
+
+  if (ciShouldFail) {
+    console.error("❌ CI failed: Critical or High severity issues detected.");
+    console.error("   Review comments have been posted. Please fix the issues.");
+    process.exit(1);
+  } else {
+    console.log("✅ CI passed: No blocking issues detected.");
   }
 
   console.log(`\n🎉 Review complete! Found ${allFindings.length} issue${allFindings.length > 1 ? 's' : ''}.`);

@@ -1,10 +1,11 @@
 // Load environment variables for testing
 require('dotenv').config();
 
-// Skip tests if no API key is available
-const hasApiKey = !!process.env.GEMINI_API_KEY;
+// Skip prompt tests by default since they require API calls
+// Run with: RUN_PROMPT_TESTS=true npm test
+const shouldRunPromptTests = process.env.RUN_PROMPT_TESTS === 'true';
 
-(hasApiKey ? describe : describe.skip)('Prompt Security and Quality', () => {
+(shouldRunPromptTests ? describe : describe.skip)('Prompt Security and Quality', () => {
   const reviewCode = require('../src/review/providers/gemini');
 
   // Test 1 - SQL Injection detection
@@ -90,5 +91,45 @@ function unsafe(input) {
     for (const issue of result.issues) {
       expect(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']).toContain(issue.severity);
     }
+  }, 60000);
+
+  // Test 6 - Multiple issues with different severities
+  test('should handle multiple issues with different severities', async () => {
+    const code = `
+function divide(a, b) {
+  if (b === 0) {
+    return null;
+  }
+  return a / b;
+}
+
+function unsafe(input) {
+  eval(input);
+}
+
+function add(a, b) {
+  return a + b;
+}
+`;
+    const result = await reviewCode(code, 'utils.js');
+    expect(result).toBeDefined();
+    expect(result.issues).toBeDefined();
+    expect(result.issues.length).toBeGreaterThan(1);
+    
+    const severities = result.issues.map(i => i.severity);
+    expect(severities).toContain('CRITICAL');
+  }, 60000);
+
+  // Test 7 - Error handling for malformed code
+  test('should handle malformed code gracefully', async () => {
+    const code = `
+function broken() {
+  return 
+}
+`;
+    const result = await reviewCode(code, 'broken.js');
+    expect(result).toBeDefined();
+    expect(result.issues).toBeDefined();
+    // Should handle gracefully without crashing
   }, 60000);
 });
