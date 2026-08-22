@@ -9,14 +9,6 @@ An AI-powered GitHub Action that automatically reviews Pull Requests, identifies
 
 ---
 
-## 🎥 Demo
-
-![PR Review Bot Demo](https://img.shields.io/badge/demo-gif%20coming%20soon-blue)
-
-*Demo shows: PR creation → Action runs → Inline comment posted → CI status check*
-
----
-
 ## ✨ Features
 
 - 🤖 **AI-powered** Pull Request code review
