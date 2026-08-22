@@ -7,9 +7,11 @@ const { postReview } = require("./github/postReview");
 const llmReview = require("./review/llmReview");
 const validateReview = require("./review/schema");
 const { hasBeenReviewed, generateReviewBody, BOT_MARKER } = require("./github/reviewStatus");
+const { filterFiles } = require("./filterFiles");
+const config = require("../reviewbot.config.js");
 
 // Get config from environment (GitHub Actions) or .env (local)
-const config = {
+const envConfig = {
   githubToken: process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN,
   geminiKey: process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY,
   owner: process.env.REPO_OWNER || process.env.GITHUB_REPOSITORY_OWNER || "varunn15",
@@ -18,20 +20,20 @@ const config = {
 };
 
 // Validate required env vars
-if (!config.githubToken) {
+if (!envConfig.githubToken) {
   console.error("❌ GITHUB_TOKEN is required");
   console.error("   Make sure it's passed as an environment variable or input");
   process.exit(1);
 }
 
-if (!config.geminiKey) {
+if (!envConfig.geminiKey) {
   console.error("❌ GEMINI_API_KEY is required");
   console.error("   Make sure it's passed as an environment variable or input");
   process.exit(1);
 }
 
 const octokit = new Octokit({
-  auth: config.githubToken,
+  auth: envConfig.githubToken,
 });
 
 /**
@@ -72,7 +74,7 @@ async function postSummaryComment(octokit, owner, repo, prNumber, body) {
 }
 
 async function main() {
-  const { owner, repo, prNumber } = config;
+  const { owner, repo, prNumber } = envConfig;
   
   console.log(`🔍 Fetching PR #${prNumber} from ${owner}/${repo}...`);
   console.log(`🤖 Running in ${process.env.GITHUB_ACTIONS ? 'GitHub Actions' : 'local'} mode`);
@@ -107,40 +109,53 @@ async function main() {
   const files = await fetchDiff(octokit, owner, repo, prNumber);
   console.log(`   Found ${files.length} files in the PR`);
 
-  // Step 4: Filter files
-  const ignorePatterns = [
-    /\.lock$/,
-    /\.txt$/,
-    /\.md$/,
-    /\.json$/,
-    /\.yml$/,
-    /\.yaml$/,
-    /pnpm-lock/,
-    /package-lock/,
-    /\.gitignore/,
-    /\.env/,
-  ];
+  // Step 4: Filter files using configuration
+  console.log(`\n🔍 Filtering files...`);
+  console.log(`   📊 Files before filtering: ${files.length}`);
   
-  const codeFiles = files.filter(file => 
-    file.additions > 0 && 
-    !ignorePatterns.some(pattern => pattern.test(file.filename))
-  );
+  const filteredFiles = filterFiles(files);
+  console.log(`   📊 Files after filtering: ${filteredFiles.length}`);
 
-  if (codeFiles.length === 0) {
-    console.log("✅ No code files to review");
+  if (filteredFiles.length === 0) {
+    console.log("✅ No code files to review after filtering");
     await postSummaryComment(octokit, owner, repo, prNumber, 
-      "✅ No code files to review. Skipping AI analysis."
+      "✅ No code files to review after filtering. Skipping AI analysis."
     );
     return;
   }
 
-  console.log(`   Found ${codeFiles.length} code files to review`);
+  // Step 5: Check max files limit
+  const { maxFiles, maxChangedLines } = config.filtering;
+  
+  if (filteredFiles.length > maxFiles) {
+    console.log(`⚠️ PR contains too many reviewable files (${filteredFiles.length} > ${maxFiles}).`);
+    await postSummaryComment(octokit, owner, repo, prNumber,
+      `⚠️ PR contains too many reviewable files (${filteredFiles.length} > ${maxFiles}). Skipping review.`
+    );
+    return;
+  }
 
-  // Step 5: Process each file
+  // Step 6: Check max changed lines limit
+  const totalChangedLines = filteredFiles.reduce(
+    (total, file) => total + (file.additions || 0) + (file.deletions || 0),
+    0
+  );
+  
+  console.log(`   📊 Total changed lines: ${totalChangedLines}`);
+
+  if (totalChangedLines > maxChangedLines) {
+    console.log(`⚠️ PR diff is too large: ${totalChangedLines} changed lines > ${maxChangedLines}.`);
+    await postSummaryComment(octokit, owner, repo, prNumber,
+      `⚠️ PR diff is too large: ${totalChangedLines} changed lines > ${maxChangedLines}. Skipping review.`
+    );
+    return;
+  }
+
+  // Step 7: Process each file
   let totalFindings = 0;
   const allFindings = [];
   
-  for (const file of codeFiles) {
+  for (const file of filteredFiles) {
     console.log(`\n📄 Processing: ${file.filename}`);
     console.log(`   Additions: ${file.additions}, Deletions: ${file.deletions}`);
 
@@ -171,7 +186,7 @@ async function main() {
     }
   }
 
-  // Step 6: Post findings as a single review
+  // Step 8: Post findings as a single review
   if (allFindings.length > 0) {
     console.log(`\n💬 Posting ${allFindings.length} finding(s) as a single review...`);
     
@@ -200,7 +215,7 @@ async function main() {
 
     // Also post a summary comment
     const summaryBody = `🤖 **PR Review Bot Summary**\n\n` +
-      `Found **${allFindings.length}** issue${allFindings.length > 1 ? 's' : ''} in ${codeFiles.length} file${codeFiles.length > 1 ? 's' : ''}.\n\n` +
+      `Found **${allFindings.length}** issue${allFindings.length > 1 ? 's' : ''} in ${filteredFiles.length} file${filteredFiles.length > 1 ? 's' : ''}.\n\n` +
       allFindings.map(f => 
         `- **${f.file}** (line ${f.line}): ${f.severity} - ${f.comment}`
       ).join('\n');
