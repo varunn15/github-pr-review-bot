@@ -8,7 +8,7 @@ const llmReview = require("./review/llmReview");
 const validateReview = require("./review/schema");
 const { hasBeenReviewed, generateReviewBody, BOT_MARKER } = require("./github/reviewStatus");
 const { filterFiles } = require("./filterFiles");
-const config = require("../reviewbot.config.js");
+const config = require("../reviewbot.config");
 
 // Get config from environment (GitHub Actions) or .env (local)
 const envConfig = {
@@ -154,7 +154,7 @@ async function main() {
   // Step 7: Process each file
   let totalFindings = 0;
   const allFindings = [];
-  
+
   for (const file of filteredFiles) {
     console.log(`\n📄 Processing: ${file.filename}`);
     console.log(`   Additions: ${file.additions}, Deletions: ${file.deletions}`);
@@ -168,18 +168,29 @@ async function main() {
     // Get AI review
     console.log("   🤖 Getting AI review from Gemini...");
     try {
-      const review = await llmReview(changedLines);
-      const validatedReview = validateReview(review, changedLines);
-
-      // Collect findings
-      for (const finding of validatedReview.findings) {
-        totalFindings++;
-        allFindings.push({
-          file: file.filename,
-          line: finding.line,
-          severity: finding.severity,
-          comment: finding.comment,
-        });
+      const review = await llmReview(changedLines, file.filename);
+      
+      // Handle the new response format
+      if (review && review.issues && Array.isArray(review.issues)) {
+        for (const issue of review.issues) {
+          // Map severity to our format
+          const severityMap = {
+            'CRITICAL': 'critical',
+            'HIGH': 'warning',
+            'MEDIUM': 'warning',
+            'LOW': 'suggestion',
+          };
+          
+          totalFindings++;
+          allFindings.push({
+            file: issue.file || file.filename,
+            line: issue.line,
+            severity: severityMap[issue.severity] || 'suggestion',
+            comment: `**${issue.title}**\n\n${issue.explanation}\n\n**Suggested Fix:** ${issue.suggestedFix}`,
+          });
+        }
+      } else {
+        console.log("   ℹ️ No issues found by AI");
       }
     } catch (error) {
       console.error(`   ❌ Error reviewing ${file.filename}:`, error.message);

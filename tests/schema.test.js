@@ -12,28 +12,36 @@ describe('validateReview', () => {
   // ✅ Valid AI response
   test('should accept valid AI response', () => {
     const review = {
-      findings: [
+      issues: [
         {
           line: 6,
-          severity: 'critical',
-          comment: 'multiply performs division instead of multiplication'
+          severity: 'CRITICAL',
+          title: 'Incorrect operation',
+          explanation: 'multiply performs division instead of multiplication',
+          suggestedFix: 'Change return a / b to return a * b'
         }
       ]
     };
 
     const result = validateReview(review, changedLines);
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0]).toEqual(review.findings[0]);
+    expect(result.findings[0]).toMatchObject({
+      line: 6,
+      severity: 'critical',
+      comment: expect.stringContaining('Incorrect operation')
+    });
   });
 
   // ❌ Invalid line
   test('should reject finding on line that was not changed', () => {
     const review = {
-      findings: [
+      issues: [
         {
           line: 999,
-          severity: 'critical',
-          comment: 'Fake issue on non-existent line'
+          severity: 'CRITICAL',
+          title: 'Fake issue',
+          explanation: 'Fake issue on non-existent line',
+          suggestedFix: 'Fix it'
         }
       ]
     };
@@ -45,11 +53,13 @@ describe('validateReview', () => {
   // ❌ Invalid severity
   test('should reject finding with invalid severity', () => {
     const review = {
-      findings: [
+      issues: [
         {
           line: 6,
-          severity: 'super-critical',
-          comment: 'Something is wrong'
+          severity: 'SUPER-CRITICAL',
+          title: 'Something is wrong',
+          explanation: 'Something is wrong',
+          suggestedFix: 'Fix it'
         }
       ]
     };
@@ -61,10 +71,12 @@ describe('validateReview', () => {
   // ❌ Missing fields
   test('should reject finding missing line', () => {
     const review = {
-      findings: [
+      issues: [
         {
-          severity: 'critical',
-          comment: 'Missing line number'
+          severity: 'CRITICAL',
+          title: 'Missing line number',
+          explanation: 'Missing line number',
+          suggestedFix: 'Fix it'
         }
       ]
     };
@@ -75,10 +87,12 @@ describe('validateReview', () => {
 
   test('should reject finding missing severity', () => {
     const review = {
-      findings: [
+      issues: [
         {
           line: 6,
-          comment: 'Missing severity'
+          title: 'Missing severity',
+          explanation: 'Missing severity',
+          suggestedFix: 'Fix it'
         }
       ]
     };
@@ -87,12 +101,15 @@ describe('validateReview', () => {
     expect(result.findings).toHaveLength(0);
   });
 
-  test('should reject finding missing comment', () => {
+  test('should reject finding missing comment (empty explanation and suggestedFix)', () => {
     const review = {
-      findings: [
+      issues: [
         {
           line: 6,
-          severity: 'critical'
+          severity: 'CRITICAL',
+          title: 'Missing comment',
+          explanation: '',
+          suggestedFix: ''
         }
       ]
     };
@@ -104,21 +121,27 @@ describe('validateReview', () => {
   // ✅ Multiple findings
   test('should handle multiple valid findings', () => {
     const review = {
-      findings: [
+      issues: [
         {
           line: 5,
-          severity: 'critical',
-          comment: 'Bug 1'
+          severity: 'CRITICAL',
+          title: 'Bug 1',
+          explanation: 'Bug 1 description',
+          suggestedFix: 'Fix 1'
         },
         {
           line: 9,
-          severity: 'warning',
-          comment: 'Bug 2'
+          severity: 'HIGH',
+          title: 'Bug 2',
+          explanation: 'Bug 2 description',
+          suggestedFix: 'Fix 2'
         },
         {
           line: 6,
-          severity: 'suggestion',
-          comment: 'Suggestion 1'
+          severity: 'MEDIUM',
+          title: 'Suggestion 1',
+          explanation: 'Suggestion 1 description',
+          suggestedFix: 'Fix 3'
         }
       ]
     };
@@ -130,86 +153,92 @@ describe('validateReview', () => {
   // Mixed valid and invalid findings
   test('should filter out invalid findings while keeping valid ones', () => {
     const review = {
-      findings: [
+      issues: [
         {
           line: 6,
-          severity: 'critical',
-          comment: 'Valid finding'
+          severity: 'CRITICAL',
+          title: 'Valid finding',
+          explanation: 'Valid finding description',
+          suggestedFix: 'Fix it'
         },
         {
           line: 999,
-          severity: 'critical',
-          comment: 'Invalid line - should be filtered'
+          severity: 'CRITICAL',
+          title: 'Invalid line - should be filtered',
+          explanation: 'Invalid line',
+          suggestedFix: 'Fix it'
         },
         {
           line: 5,
-          severity: 'warning',
-          comment: 'Another valid finding'
+          severity: 'HIGH',
+          title: 'Another valid finding',
+          explanation: 'Another valid finding description',
+          suggestedFix: 'Fix it'
         }
       ]
     };
 
     const result = validateReview(review, changedLines);
     expect(result.findings).toHaveLength(2);
-    expect(result.findings[0].comment).toBe('Valid finding');
-    expect(result.findings[1].comment).toBe('Another valid finding');
+    expect(result.findings[0].comment).toContain('Valid finding');
+    expect(result.findings[1].comment).toContain('Another valid finding');
   });
 
   // ❌ Malformed AI response
   test('should handle malformed AI response gracefully', () => {
     const review = {
-      findings: 'This is not an array'
+      issues: 'This is not an array'
     };
 
     expect(() => validateReview(review, changedLines)).toThrow(
-      'Invalid review format: findings must be an array'
+      'Invalid review format: issues must be an array'
     );
   });
 
   test('should handle null review gracefully', () => {
     expect(() => validateReview(null, changedLines)).toThrow(
-      'Invalid review format: findings must be an array'
+      'Invalid review format: issues must be an array'
     );
   });
 
   // ❌ Hallucinated line test
   test('should reject hallucinated line not in changed lines', () => {
     const review = {
-      findings: [
+      issues: [
         {
           line: 500,
-          severity: 'critical',
-          comment: 'Hallucinated issue on line 500'
+          severity: 'CRITICAL',
+          title: 'Hallucinated issue on line 500',
+          explanation: 'Hallucinated issue',
+          suggestedFix: 'Fix it'
         }
       ]
     };
 
     const result = validateReview(review, changedLines);
     expect(result.findings).toHaveLength(0);
-    // Verify the hallucinated line was rejected
-    expect(result.findings).not.toContainEqual(
-      expect.objectContaining({ line: 500 })
-    );
   });
 
   // ✅ Valid severity values
   test('should accept all valid severity values', () => {
-    const severities = ['critical', 'warning', 'suggestion'];
+    const severities = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
     
     for (const severity of severities) {
       const review = {
-        findings: [
+        issues: [
           {
             line: 6,
             severity: severity,
-            comment: `Testing ${severity} severity`
+            title: `Testing ${severity} severity`,
+            explanation: `Testing ${severity} severity description`,
+            suggestedFix: 'Fix it'
           }
         ]
       };
 
       const result = validateReview(review, changedLines);
       expect(result.findings).toHaveLength(1);
-      expect(result.findings[0].severity).toBe(severity);
+      expect(result.findings[0].severity).toBe(severity.toLowerCase());
     }
   });
 });
